@@ -1,6 +1,6 @@
 # HTML Replacer Plugin
 
-Apply regex-based replacements to EPUB HTML content before rendering.
+Apply regex-based replacements to EPUB HTML content with a preview-and-apply workflow.
 
 ## Features
 
@@ -9,20 +9,30 @@ Apply regex-based replacements to EPUB HTML content before rendering.
 - Add or modify content
 - Enable/disable rules individually
 - **All rules are BOOK-SPECIFIC** (stored with each book's metadata)
-- Automatic caching (only reprocesses when needed)
-- Triggers document reload when replacements change
+- **Preview changes** in a temporary cache before applying
+- **Apply permanently** to replace the original EPUB (with backup)
+- **Revert** to restore original from backup
 
-## Usage
+## Workflow
 
-1. **Open an EPUB** in KOReader
-2. **Access the menu**: Tap menu → HTML Replacer
-3. **Add New Rule** to create patterns (or enable example rules)
-4. **Toggle Replacement Rules** to enable/disable rules
-5. **Reload with Replacements** to apply changes
+1. **Add Rules**: Define regex patterns specific to this book
+2. **Preview**: Use "Reload with Replacements" to create a temporary cached version
+3. **Inspect**: Read the cached version to verify your changes
+4. **Optional**: Create CSS tweaks while viewing the cache (they'll be copied on apply)
+5. **Apply**: Use "Apply Changes to Original" to permanently replace the EPUB (original is backed up)
+6. **Revert** (if needed): Use "Revert to Original" to restore from backup
 
 ### Important: Rules Are Book-Specific!
 
 Each book has its own set of replacement rules, stored in the book's `.sdr` folder (just like CSS tweaks). Rules you create for one book won't affect other books.
+
+## Quick Start
+
+1. **Open an EPUB** in KOReader
+2. **Access the menu**: Tap menu → Style → Content tweaks
+3. **Add New Rule** to create patterns
+4. **Reload with Replacements** to preview
+5. **Apply Changes to Original** when satisfied
 
 ## Adding Rules
 
@@ -71,24 +81,42 @@ replacement = "<i>%1</i>"
 
 ## Performance Notes
 
-- First load processes the EPUB and caches it
-- Subsequent opens use the cached version (very fast)
-- Cache is invalidated when:
-  - Original EPUB is modified
-  - Replacement rules change
-- Use "Clear Cache" to manually remove cached files
+- "Reload with Replacements" creates a temporary cache for preview
+- Cache is automatically managed (one cache per book)
+- Cache is updated when rules change
+- **Apply Changes** removes the cache and replaces the original permanently
+- Use "Clear Cache" to manually remove all cached preview files
 
 ## Limitations
 
 - Only works with EPUB files (not PDF, TXT, etc.)
-- Requires `unzip` and `zip` commands on device
+- Uses KOReader's built-in archiver (no external dependencies)
 - Processing large EPUBs may take a few seconds
 - Malformed regex patterns may cause issues
 
+## CSS Tweaks Integration
+
+While viewing the cached preview, you can create CSS tweaks via **Style tweaks → Book-specific tweak**. When you click "Apply Changes to Original", these CSS tweaks will be automatically copied to the original file's settings with a marker comment:
+
+```css
+/* ========== COPIED FROM CACHE FILE ========== */
+```
+
+This lets you experiment with both HTML replacements and CSS tweaks together, then apply them all at once.
+
+## Safety & Backups
+
+- **Preview is non-destructive**: Cache files don't modify your original EPUB
+- **Apply creates backup**: Original is backed up to `htmlreplacer_cache/originals/`
+- **CSS tweaks auto-copied**: Any CSS tweaks in cache are appended to original on apply
+- **Revert available**: Restore original anytime using "Revert to Original"
+- **Rules are preserved**: Even after reverting, your rules remain in `.sdr` folder
+
 ## Troubleshooting
 
-1. **Processing fails**: Check that `unzip` and `zip` are available
-2. **Rules not applying**: Ensure patterns are valid Lua regex
+1. **Processing fails**: Check KOReader logs for specific errors
+2. **Rules not applying**: Verify patterns with the "Check" button before saving
 3. **Document won't open**: Try "Clear Cache" and reload
-4. **Check logs**: Look in KOReader logs for error messages
+4. **Lost progress/settings**: Use "Revert to Original" then re-apply with corrected rules
+5. **Check logs**: Look in KOReader logs for detailed error messages
 

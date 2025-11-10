@@ -5,6 +5,7 @@ EPUB Processor - Extracts, modifies, and repackages EPUB files
 local logger = require("logger")
 local lfs = require("libs/libkoreader-lfs")
 local md5 = require("ffi/sha2").md5
+local Archiver = require("ffi/archiver")
 
 local EpubProcessor = {}
 
@@ -166,7 +167,7 @@ function EpubProcessor:processHtmlFile(filepath, replacements)
 end
 
 function EpubProcessor:repackageEpub(temp_dir, output_path)
-    -- Ensure cache directory exists and use absolute path
+    -- Ensure cache directory exists
     local cache_dir_path = output_path:match("(.*/)")
     if cache_dir_path then
         if lfs.attributes(cache_dir_path, "mode") ~= "directory" then
@@ -178,33 +179,56 @@ function EpubProcessor:repackageEpub(temp_dir, output_path)
         end
     end
     
-    -- Convert to absolute path if relative
-    if not output_path:match("^/") then
-        output_path = lfs.currentdir() .. "/" .. output_path
+    -- Remove existing file if present
+    if lfs.attributes(output_path) then
+        os.remove(output_path)
+    end
+    
+    -- Use KOReader's archiver to create EPUB (ZIP format)
+    local writer = Archiver.Writer:new()
+    if not writer:open(output_path, "zip") then
+        logger.err("EpubProcessor: Failed to open archive for writing:", writer.err)
+        return false
     end
     
     -- EPUB spec requires mimetype file to be first and uncompressed
-    -- Then we can zip everything else
+    writer:setZipCompression("store")
+    local mimetype_path = temp_dir .. "/mimetype"
+    local f = io.open(mimetype_path, "r")
+    if not f then
+        logger.err("EpubProcessor: Failed to read mimetype")
+        writer:close()
+        return false
+    end
+    local mimetype_content = f:read("*all")
+    f:close()
     
-    -- First, create the mimetype file (uncompressed)
-    local cmd = string.format("cd %q && zip -0 -X %q mimetype", temp_dir, output_path)
-    local result = os.execute(cmd)
-    
-    if result ~= 0 and result ~= true then
-        logger.err("EpubProcessor: Failed to create mimetype")
+    if not writer:addFileFromMemory("mimetype", mimetype_content) then
+        logger.err("EpubProcessor: Failed to add mimetype:", writer.err)
+        writer:close()
         return false
     end
     
-    -- Then add everything else (compressed)
-    cmd = string.format("cd %q && zip -r -X %q * -x mimetype", temp_dir, output_path)
-    result = os.execute(cmd)
+    -- Now add everything else with compression
+    writer:setZipCompression("deflate")
     
-    if result == 0 or result == true then
-        return true
-    else
-        logger.err("EpubProcessor: Failed to repackage EPUB")
-        return false
+    -- Recursively add all other files and directories
+    for entry in lfs.dir(temp_dir) do
+        if entry ~= "." and entry ~= ".." and entry ~= "mimetype" then
+            local path = temp_dir .. "/" .. entry
+            writer:addPath(entry, path, true)
+            -- Check for actual errors (err will be nil on success or EOF)
+            if writer.err then
+                logger.err("EpubProcessor: Failed to add", entry, ":", writer.err)
+                writer:close()
+                return false
+            end
+        end
     end
+    
+    writer:close()
+    logger.info("EpubProcessor: Successfully created EPUB:", output_path)
+    return true
 end
 
 function EpubProcessor:cleanupTempDir(temp_dir)
