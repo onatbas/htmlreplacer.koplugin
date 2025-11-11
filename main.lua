@@ -943,25 +943,22 @@ function HtmlReplacer:doApplyChanges()
             logger.info("HtmlReplacer: Copied CSS tweaks from cache to original")
         end
         
-        -- Step 1: Backup original to cache/originals/
+        -- Step 1: Backup original to cache/originals/ (only if no backup exists)
         local backup_path = self:getBackupPath(self.original_file)
         
-        -- Remove existing backup if present
-        if lfs.attributes(backup_path, "mode") == "file" then
-            os.remove(backup_path)
-            logger.info("HtmlReplacer: Removed old backup")
+        -- Only create backup if one doesn't already exist (preserve the TRUE original)
+        if lfs.attributes(backup_path, "mode") ~= "file" then
+            local success = self:copyFile(self.original_file, backup_path)
+            if not success then
+                UIManager:show(InfoMessage:new{
+                    text = _("Failed to backup original file."),
+                })
+                return
+            end
+            logger.info("HtmlReplacer: Backed up original to", backup_path)
+        else
+            logger.info("HtmlReplacer: Backup already exists")
         end
-        
-        -- Copy original to backup
-        local success = self:copyFile(self.original_file, backup_path)
-        if not success then
-            UIManager:show(InfoMessage:new{
-                text = _("Failed to backup original file."),
-            })
-            return
-        end
-        
-        logger.info("HtmlReplacer: Backed up original to", backup_path)
         
         -- Step 2: Copy modified cache to original location
         success = self:copyFile(self.modified_file, self.original_file)
