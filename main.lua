@@ -21,9 +21,20 @@ local HtmlReplacer = WidgetContainer:extend{
 local cache_dir = DataStorage:getDataDir() .. "/htmlreplacer_cache"
 
 function HtmlReplacer:init()
+    logger.info("HtmlReplacer: === Plugin Initialization ===")
+    logger.info("HtmlReplacer: Cache directory:", cache_dir)
+    
     -- Create cache directory if it doesn't exist
     if lfs.attributes(cache_dir, "mode") ~= "directory" then
-        lfs.mkdir(cache_dir)
+        logger.info("HtmlReplacer: Cache directory does not exist, creating it...")
+        local success = lfs.mkdir(cache_dir)
+        if success then
+            logger.info("HtmlReplacer: Cache directory created successfully")
+        else
+            logger.err("HtmlReplacer: Failed to create cache directory!")
+        end
+    else
+        logger.info("HtmlReplacer: Cache directory already exists")
     end
     
     -- Replacements will be loaded per-document in onReadSettings
@@ -35,60 +46,83 @@ function HtmlReplacer:init()
     self.is_using_cache = false
     
     self.ui.menu:registerToMainMenu(self)
+    logger.info("HtmlReplacer: Plugin initialization complete")
 end
 
 function HtmlReplacer:onReadSettings(config)
     local current_file = self.ui.document.file
-    logger.info("HtmlReplacer: onReadSettings called for file:", current_file)
+    logger.info("HtmlReplacer: === onReadSettings START ===")
+    logger.info("HtmlReplacer: Current file:", current_file)
+    logger.info("HtmlReplacer: Cache directory:", cache_dir)
     
     -- Check if we're opening a cached file (simple path check)
     if current_file:find(cache_dir, 1, true) then
         logger.info("HtmlReplacer: Detected cached file")
         -- Read marker to find original
         local marker_file = current_file .. ".original_path"
+        logger.dbg("HtmlReplacer: Looking for marker at:", marker_file)
         local f = io.open(marker_file, "r")
         if f then
             self.original_file = f:read("*line")
             f:close()
             self.modified_file = current_file
             self.is_using_cache = true
-            logger.info("HtmlReplacer: Original file:", self.original_file)
+            logger.info("HtmlReplacer: Successfully read original file from marker:", self.original_file)
             
             -- Load rules from ORIGINAL file (so we can manage them)
             local DocSettings = require("docsettings")
             local original_settings = DocSettings:open(self.original_file)
             self.replacements = original_settings:readSetting("htmlreplacer_rules") or {}
-            logger.info("HtmlReplacer: Loaded", #self.replacements, "rules from original")
+            logger.info("HtmlReplacer: Loaded", #self.replacements, "rules from original file")
+            
+            -- Log each rule for debugging
+            for i, rule in ipairs(self.replacements) do
+                logger.dbg("HtmlReplacer: Rule", i, "- enabled:", rule.enabled, "pattern:", rule.pattern:sub(1, 50))
+            end
             return
         else
-            logger.warn("HtmlReplacer: Cache file but no marker found")
+            logger.warn("HtmlReplacer: Cache file detected but marker not found at:", marker_file)
             self.original_file = current_file
             self.is_using_cache = false
         end
     else
         -- Normal file
+        logger.info("HtmlReplacer: Normal (non-cached) file detected")
         self.original_file = current_file
         self.is_using_cache = false
     end
     
     -- Load book-specific replacement rules
     self.replacements = config:readSetting("htmlreplacer_rules") or {}
-    logger.info("HtmlReplacer: Loaded", #self.replacements, "rules")
+    logger.info("HtmlReplacer: Loaded", #self.replacements, "rules from config")
+    
+    -- Log each rule for debugging
+    for i, rule in ipairs(self.replacements) do
+        logger.dbg("HtmlReplacer: Rule", i, "- enabled:", rule.enabled, "pattern:", rule.pattern:sub(1, 50))
+    end
+    
+    logger.info("HtmlReplacer: === onReadSettings END ===")
 end
 
 function HtmlReplacer:onSaveSettings()
+    logger.info("HtmlReplacer: === onSaveSettings START ===")
+    logger.info("HtmlReplacer: is_using_cache:", self.is_using_cache)
+    logger.info("HtmlReplacer: original_file:", self.original_file or "nil")
+    logger.info("HtmlReplacer: Number of rules to save:", #self.replacements)
+    
     -- If viewing cache, save to ORIGINAL file's settings
     if self.is_using_cache and self.original_file then
         local DocSettings = require("docsettings")
         local original_settings = DocSettings:open(self.original_file)
         original_settings:saveSetting("htmlreplacer_rules", self.replacements)
         original_settings:flush()
-        logger.info("HtmlReplacer: Saved", #self.replacements, "rules to original file")
+        logger.info("HtmlReplacer: Successfully saved", #self.replacements, "rules to original file")
     else
         -- Normal file, save to current
         self.ui.doc_settings:saveSetting("htmlreplacer_rules", self.replacements)
-        logger.info("HtmlReplacer: Saved", #self.replacements, "rules")
+        logger.info("HtmlReplacer: Successfully saved", #self.replacements, "rules to current file")
     end
+    logger.info("HtmlReplacer: === onSaveSettings END ===")
 end
 
 function HtmlReplacer:onReaderReady()
@@ -172,12 +206,26 @@ function HtmlReplacer:switchToCachedFile(cache_file)
 end
 
 function HtmlReplacer:processAndReload()
+    logger.info("HtmlReplacer: === processAndReload START ===")
+    logger.info("HtmlReplacer: original_file:", self.original_file or "nil")
+    logger.info("HtmlReplacer: Number of rules:", #self.replacements)
+    
     if not self.original_file then
+        logger.err("HtmlReplacer: No original file set, cannot process")
         UIManager:show(InfoMessage:new{
             text = _("No EPUB file to process."),
         })
         return
     end
+    
+    -- Count enabled rules
+    local enabled_count = 0
+    for _, rule in ipairs(self.replacements) do
+        if rule.enabled then
+            enabled_count = enabled_count + 1
+        end
+    end
+    logger.info("HtmlReplacer: Enabled rules:", enabled_count)
     
     UIManager:show(InfoMessage:new{
         text = _("Creating preview with replacements...\nThis may take a moment."),
@@ -187,16 +235,19 @@ function HtmlReplacer:processAndReload()
     
     -- Process EPUB in background (or at least show we're working)
     UIManager:scheduleIn(0.1, function()
+        logger.info("HtmlReplacer: Starting EPUB processing...")
         local EpubProcessor = require("epubprocessor")
         local processor = EpubProcessor:new(cache_dir) -- Use cache directory
         
         local modified_file = processor:processEpub(self.original_file, self.replacements)
         
         if modified_file then
+            logger.info("HtmlReplacer: EPUB processing successful, cache file:", modified_file)
             self.modified_file = modified_file
             self.is_using_cache = true
             
             -- Set up symlink BEFORE switching documents
+            logger.info("HtmlReplacer: Setting up cache symlinks...")
             self:setupCacheSymlinks(modified_file, self.original_file)
             
             -- Now trigger a document reload with the modified file
@@ -208,14 +259,17 @@ function HtmlReplacer:processAndReload()
             
             -- Wait a bit then reload
             UIManager:scheduleIn(0.5, function()
+                logger.info("HtmlReplacer: Reloading with modified file...")
                 self:reloadWithModifiedFile(modified_file)
             end)
         else
+            logger.err("HtmlReplacer: EPUB processing failed - processor returned nil")
             UIManager:show(InfoMessage:new{
                 text = _("Failed to process EPUB. Check logs for details."),
             })
         end
     end)
+    logger.info("HtmlReplacer: === processAndReload END (scheduled) ===")
 end
 
 function HtmlReplacer:setupCacheSymlinks(cache_file, original_file)
@@ -995,6 +1049,11 @@ function HtmlReplacer:applyChanges()
 end
 
 function HtmlReplacer:doApplyChanges()
+    logger.info("HtmlReplacer: === doApplyChanges START ===")
+    logger.info("HtmlReplacer: is_using_cache:", self.is_using_cache)
+    logger.info("HtmlReplacer: original_file:", self.original_file or "nil")
+    logger.info("HtmlReplacer: modified_file:", self.modified_file or "nil")
+    
     UIManager:show(InfoMessage:new{
         text = _("Applying changes..."),
         timeout = 2,
@@ -1002,14 +1061,19 @@ function HtmlReplacer:doApplyChanges()
     })
     
     UIManager:scheduleIn(0.1, function()
+        logger.info("HtmlReplacer: Step 0 - Checking for CSS tweaks to copy...")
         -- Step 0: Copy CSS tweaks from cache to original if they exist
         local DocSettings = require("docsettings")
         local cache_settings = DocSettings:open(self.modified_file)
         local original_settings = DocSettings:open(self.original_file)
         
         local cache_css = cache_settings:readSetting("book_style_tweak")
+        logger.dbg("HtmlReplacer: Cache CSS length:", cache_css and #cache_css or 0)
+        
         if cache_css and cache_css ~= "" then
+            logger.info("HtmlReplacer: Found CSS tweaks in cache, copying to original...")
             local original_css = original_settings:readSetting("book_style_tweak") or ""
+            logger.dbg("HtmlReplacer: Original CSS length:", #original_css)
             
             -- Append cache CSS with a marker
             if original_css ~= "" then
@@ -1021,55 +1085,78 @@ function HtmlReplacer:doApplyChanges()
             original_settings:saveSetting("book_style_tweak_enabled", true) -- Enable it
             original_settings:flush()
             
-            logger.info("HtmlReplacer: Copied CSS tweaks from cache to original")
+            logger.info("HtmlReplacer: Successfully copied CSS tweaks from cache to original")
+        else
+            logger.info("HtmlReplacer: No CSS tweaks in cache to copy")
         end
         
         -- Step 1: Backup original to cache/originals/
+        logger.info("HtmlReplacer: Step 1 - Creating backup...")
         local backup_path = self:getBackupPath(self.original_file)
+        logger.info("HtmlReplacer: Backup path:", backup_path)
         
-        -- Remove existing backup if present
+        -- Check if backup already exists
         if lfs.attributes(backup_path, "mode") == "file" then
-            os.remove(backup_path)
-            logger.info("HtmlReplacer: Removed old backup")
+            logger.info("HtmlReplacer: Old backup exists, removing it")
+            local remove_result = os.remove(backup_path)
+            logger.dbg("HtmlReplacer: Old backup removal result:", remove_result)
+        else
+            logger.info("HtmlReplacer: No previous backup found")
         end
         
         -- Copy original to backup
+        logger.info("HtmlReplacer: Copying original to backup...")
         local success = self:copyFile(self.original_file, backup_path)
         if not success then
+            logger.err("HtmlReplacer: Failed to backup original file!")
             UIManager:show(InfoMessage:new{
                 text = _("Failed to backup original file."),
             })
             return
         end
         
-        logger.info("HtmlReplacer: Backed up original to", backup_path)
+        logger.info("HtmlReplacer: Successfully backed up original to", backup_path)
         
         -- Step 2: Copy modified cache to original location
+        logger.info("HtmlReplacer: Step 2 - Replacing original with modified version...")
+        logger.info("HtmlReplacer: Source (modified):", self.modified_file)
+        logger.info("HtmlReplacer: Destination (original):", self.original_file)
         success = self:copyFile(self.modified_file, self.original_file)
         if not success then
+            logger.err("HtmlReplacer: Failed to replace original file!")
             UIManager:show(InfoMessage:new{
                 text = _("Failed to replace original file."),
             })
             return
         end
         
-        logger.info("HtmlReplacer: Replaced original with modified version")
+        logger.info("HtmlReplacer: Successfully replaced original with modified version")
         
         -- Step 3: Clean up cache files for this book
+        logger.info("HtmlReplacer: Step 3 - Cleaning up cache files...")
+        logger.info("HtmlReplacer: Removing cache file:", self.modified_file)
         os.remove(self.modified_file)
+        logger.info("HtmlReplacer: Removing marker file:", self.modified_file .. ".original_path")
         os.remove(self.modified_file .. ".original_path")
+        logger.info("HtmlReplacer: Removing hash file:", self.modified_file .. ".rules_hash")
         os.remove(self.modified_file .. ".rules_hash")
         
         -- Remove cache .sdr folder if it exists
         local DocSettings = require("docsettings")
         local cache_sdr = DocSettings:getSidecarDir(self.modified_file)
+        logger.dbg("HtmlReplacer: Cache .sdr directory:", cache_sdr)
         if lfs.attributes(cache_sdr, "mode") == "directory" then
-            os.execute(string.format("rm -rf %q", cache_sdr))
+            logger.info("HtmlReplacer: Removing cache .sdr directory...")
+            local rm_cmd = string.format("rm -rf %q", cache_sdr)
+            os.execute(rm_cmd)
+        else
+            logger.info("HtmlReplacer: No cache .sdr directory to remove")
         end
         
-        logger.info("HtmlReplacer: Cleaned up cache files")
+        logger.info("HtmlReplacer: Successfully cleaned up cache files")
         
         -- Step 4: Reload with the original file (which now has modifications)
+        logger.info("HtmlReplacer: Step 4 - Preparing to reload document...")
         local message = _("Changes applied! Reloading...")
         if cache_css and cache_css ~= "" then
             message = _("Changes applied!\n\nCSS tweaks also copied from cache.\n\nReloading...")
@@ -1082,15 +1169,21 @@ function HtmlReplacer:doApplyChanges()
         })
         
         UIManager:scheduleIn(0.5, function()
+            logger.info("HtmlReplacer: Resetting cache state...")
             -- Reset state
             self.is_using_cache = false
             self.modified_file = nil
             
             -- Reload the original file
+            logger.info("HtmlReplacer: Switching document to original file:", self.original_file)
             if self.ui.switchDocument then
                 self.ui:switchDocument(self.original_file, true)
+                logger.info("HtmlReplacer: Document switch initiated")
+            else
+                logger.err("HtmlReplacer: switchDocument function not available!")
             end
         end)
+        logger.info("HtmlReplacer: === doApplyChanges END ===")
     end)
 end
 
@@ -1169,24 +1262,56 @@ function HtmlReplacer:doRevertChanges(backup_path)
 end
 
 function HtmlReplacer:copyFile(src, dst)
+    logger.dbg("HtmlReplacer: copyFile() - Source:", src)
+    logger.dbg("HtmlReplacer: copyFile() - Destination:", dst)
+    
+    -- Check source file attributes
+    local src_attr = lfs.attributes(src)
+    if not src_attr then
+        logger.err("HtmlReplacer: Source file does not exist or cannot be accessed:", src)
+        return false
+    end
+    logger.dbg("HtmlReplacer: Source file size:", src_attr.size, "bytes")
+    logger.dbg("HtmlReplacer: Source file mode:", src_attr.mode)
+    
     local src_file = io.open(src, "rb")
     if not src_file then
-        logger.err("HtmlReplacer: Failed to open source:", src)
+        logger.err("HtmlReplacer: Failed to open source file for reading:", src)
         return false
     end
     
     local content = src_file:read("*all")
     src_file:close()
     
+    if not content then
+        logger.err("HtmlReplacer: Failed to read content from source file:", src)
+        return false
+    end
+    logger.dbg("HtmlReplacer: Successfully read", #content, "bytes from source")
+    
     local dst_file = io.open(dst, "wb")
     if not dst_file then
-        logger.err("HtmlReplacer: Failed to open destination:", dst)
+        logger.err("HtmlReplacer: Failed to open destination file for writing:", dst)
         return false
     end
     
-    dst_file:write(content)
+    local write_result = dst_file:write(content)
     dst_file:close()
     
+    if not write_result then
+        logger.err("HtmlReplacer: Failed to write content to destination file:", dst)
+        return false
+    end
+    
+    -- Verify destination file was created
+    local dst_attr = lfs.attributes(dst)
+    if not dst_attr then
+        logger.err("HtmlReplacer: Destination file was not created:", dst)
+        return false
+    end
+    logger.dbg("HtmlReplacer: Successfully wrote", dst_attr.size, "bytes to destination")
+    
+    logger.info("HtmlReplacer: copyFile() successful -", src_attr.size, "bytes copied")
     return true
 end
 
