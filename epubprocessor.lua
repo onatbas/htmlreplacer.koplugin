@@ -85,19 +85,36 @@ function EpubProcessor:extractEpub(epub_path)
     -- EPUBs are ZIP files
     -- We need to extract them to a temp directory
     
-    -- Create temp directory
-    local temp_dir = os.tmpname()
-    os.remove(temp_dir) -- Remove the file
-    lfs.mkdir(temp_dir) -- Create as directory
+    -- Create temp directory (Android-safe approach)
+    local temp_base = os.tmpname()
+    if not temp_base then
+        logger.err("EpubProcessor: os.tmpname() returned nil")
+        return nil
+    end
+    
+    os.remove(temp_base) -- Remove the file that os.tmpname() created
+    local temp_dir = temp_base .. "_epub_proc"
+    
+    local mkdir_result = lfs.mkdir(temp_dir)
+    if not mkdir_result then
+        logger.err("EpubProcessor: Failed to create temp directory:", temp_dir)
+        return nil
+    end
+    
+    logger.info("EpubProcessor: Created temp directory:", temp_dir)
     
     -- Use system unzip command (most e-readers have this)
     local cmd = string.format("unzip -q %q -d %q", epub_path, temp_dir)
+    logger.dbg("EpubProcessor: Running unzip command:", cmd)
     local result = os.execute(cmd)
     
     if result == 0 or result == true then
+        logger.dbg("EpubProcessor: Unzip successful")
         return temp_dir
     else
-        logger.err("EpubProcessor: unzip failed")
+        logger.err("EpubProcessor: unzip failed with result:", result)
+        -- Clean up failed temp directory
+        os.execute(string.format("rm -rf %q", temp_dir))
         return nil
     end
 end
@@ -144,8 +161,15 @@ function EpubProcessor:processHtmlFile(filepath, replacements)
     -- Apply each enabled replacement
     for _, rule in ipairs(replacements) do
         if rule.enabled then
-            local new_content = content:gsub(rule.pattern, rule.replacement)
-            if new_content ~= content then
+            -- Wrap in pcall to catch pattern errors
+            local success, new_content = pcall(function()
+                return content:gsub(rule.pattern, rule.replacement)
+            end)
+            
+            if not success then
+                logger.err("EpubProcessor: Pattern/replacement error for rule:", rule.pattern, "Error:", new_content)
+                -- Continue with other rules instead of failing completely
+            elseif new_content ~= content then
                 content = new_content
                 modified = true
                 logger.dbg("EpubProcessor: Applied rule to", filepath)
@@ -160,6 +184,8 @@ function EpubProcessor:processHtmlFile(filepath, replacements)
             f:write(content)
             f:close()
             return true
+        else
+            logger.err("EpubProcessor: Failed to write modified file:", filepath)
         end
     end
     
@@ -194,14 +220,19 @@ function EpubProcessor:repackageEpub(temp_dir, output_path)
     -- EPUB spec requires mimetype file to be first and uncompressed
     writer:setZipCompression("store")
     local mimetype_path = temp_dir .. "/mimetype"
+    local mimetype_content = nil
+    
+    -- Try to read existing mimetype file
     local f = io.open(mimetype_path, "r")
-    if not f then
-        logger.err("EpubProcessor: Failed to read mimetype")
-        writer:close()
-        return false
+    if f then
+        mimetype_content = f:read("*all")
+        f:close()
+        logger.dbg("EpubProcessor: Read mimetype from extracted EPUB")
+    else
+        -- Create default mimetype if not present
+        logger.warn("EpubProcessor: mimetype file not found, creating default")
+        mimetype_content = "application/epub+zip"
     end
-    local mimetype_content = f:read("*all")
-    f:close()
     
     if not writer:addFileFromMemory("mimetype", mimetype_content) then
         logger.err("EpubProcessor: Failed to add mimetype:", writer.err)

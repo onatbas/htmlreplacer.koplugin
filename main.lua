@@ -161,6 +161,7 @@ function HtmlReplacer:switchToCachedFile(cache_file)
     UIManager:show(InfoMessage:new{
         text = _("Loading cached preview..."),
         timeout = 1,
+        flush_events_on_show = true,
     })
     
     UIManager:scheduleIn(0.1, function()
@@ -181,6 +182,7 @@ function HtmlReplacer:processAndReload()
     UIManager:show(InfoMessage:new{
         text = _("Creating preview with replacements...\nThis may take a moment."),
         timeout = 3,
+        flush_events_on_show = true,
     })
     
     -- Process EPUB in background (or at least show we're working)
@@ -201,6 +203,7 @@ function HtmlReplacer:processAndReload()
             UIManager:show(InfoMessage:new{
                 text = _("Preview ready! Loading...\n\nUse 'Apply Changes' to make permanent."),
                 timeout = 2,
+                flush_events_on_show = true,
             })
             
             -- Wait a bit then reload
@@ -746,29 +749,67 @@ function HtmlReplacer:checkPattern(pattern, replacement)
     UIManager:show(InfoMessage:new{
         text = _("Checking pattern..."),
         timeout = 1,
+        flush_events_on_show = true,
     })
     
     UIManager:scheduleIn(0.1, function()
         local matches = {}
         local total_count = 0
         
-        -- Extract EPUB to temp directory
-        local temp_dir = os.tmpname()
-        os.remove(temp_dir)
-        lfs.mkdir(temp_dir)
+        -- Extract EPUB to temp directory (Android-safe approach)
+        local temp_base = os.tmpname()
+        if temp_base then
+            os.remove(temp_base)  -- Remove the file that os.tmpname() created
+        else
+            logger.err("HtmlReplacer: os.tmpname() returned nil")
+            UIManager:show(InfoMessage:new{
+                text = _("Failed to create temporary file name."),
+            })
+            return
+        end
+        
+        local temp_dir = temp_base .. "_epub_check"
+        local mkdir_result = lfs.mkdir(temp_dir)
+        
+        if not mkdir_result then
+            logger.err("HtmlReplacer: Failed to create temp directory:", temp_dir)
+            UIManager:show(InfoMessage:new{
+                text = _("Failed to create temporary directory.\n\nPath: ") .. temp_dir,
+            })
+            return
+        end
+        
+        logger.info("HtmlReplacer: Created temp directory:", temp_dir)
         
         local cmd = string.format("unzip -q %q -d %q", file, temp_dir)
+        logger.info("HtmlReplacer: Running unzip command:", cmd)
         local result = os.execute(cmd)
         
         if result == 0 or result == true then
+            logger.info("HtmlReplacer: Unzip successful, searching for pattern matches")
+            
             -- Search all HTML files
+            local pattern_error = nil
             local function searchDirectory(dir)
-                for entry in lfs.dir(dir) do
+                -- Check if we already hit an error
+                if pattern_error then
+                    return
+                end
+                
+                local dir_iter, dir_obj = lfs.dir(dir)
+                if not dir_iter then
+                    logger.warn("HtmlReplacer: Cannot read directory:", dir)
+                    return
+                end
+                
+                for entry in dir_iter, dir_obj do
                     if entry ~= "." and entry ~= ".." then
                         local path = dir .. "/" .. entry
                         local attr = lfs.attributes(path)
                         
-                        if attr.mode == "directory" then
+                        if not attr then
+                            logger.warn("HtmlReplacer: Cannot get attributes for:", path)
+                        elseif attr.mode == "directory" then
                             searchDirectory(path)
                         elseif attr.mode == "file" and path:match("%.x?html$") then
                             local f = io.open(path, "r")
@@ -777,19 +818,42 @@ function HtmlReplacer:checkPattern(pattern, replacement)
                                 f:close()
                                 
                                 -- Find all matches and show what will be replaced
+                                -- Wrap in pcall to catch pattern errors
                                 local search_pos = 1
                                 while search_pos <= #content do
-                                    local match_start, match_end = content:find(pattern, search_pos)
+                                    -- Safely try to find the pattern
+                                    local success, match_start, match_end = pcall(function()
+                                        return content:find(pattern, search_pos)
+                                    end)
+                                    
+                                    if not success then
+                                        -- Pattern error occurred
+                                        pattern_error = match_start
+                                        logger.err("HtmlReplacer: Pattern error:", match_start)
+                                        break
+                                    end
+                                    
                                     if match_start then
                                         total_count = total_count + 1
-                                        -- Extract the full matched text
-                                        local matched_text = content:sub(match_start, match_end)
-                                        -- Apply the replacement to show what it becomes
-                                        local replaced_text = matched_text:gsub(pattern, replacement or "")
-                                        table.insert(matches, {
-                                            before = matched_text,
-                                            after = replaced_text
-                                        })
+                                        if #matches < 5 then
+                                            -- Extract the full matched text
+                                            local matched_text = content:sub(match_start, match_end)
+                                            
+                                            -- Apply the replacement to show what it becomes
+                                            local replace_success, replaced_text = pcall(function()
+                                                return matched_text:gsub(pattern, replacement or "")
+                                            end)
+                                            
+                                            if not replace_success then
+                                                logger.warn("HtmlReplacer: Replacement error:", replaced_text)
+                                                replaced_text = "[Replacement Error]"
+                                            end
+                                            
+                                            table.insert(matches, {
+                                                before = matched_text,
+                                                after = replaced_text
+                                            })
+                                        end
                                         search_pos = match_end + 1
                                     else
                                         break
@@ -804,7 +868,17 @@ function HtmlReplacer:checkPattern(pattern, replacement)
             searchDirectory(temp_dir)
             
             -- Cleanup
+            logger.info("HtmlReplacer: Cleaning up temp directory")
             os.execute(string.format("rm -rf %q", temp_dir))
+            
+            -- Check if we hit a pattern error
+            if pattern_error then
+                UIManager:show(InfoMessage:new{
+                    text = _("Pattern syntax error:\n\n") .. tostring(pattern_error),
+                    timeout = 5,
+                })
+                return
+            end
             
             -- Show results
             local TextViewer = require("ui/widget/textviewer")
@@ -812,11 +886,11 @@ function HtmlReplacer:checkPattern(pattern, replacement)
                 pattern, replacement or "(none)", total_count)
             
             if #matches > 0 then
-                result_text = result_text .. "All " .. #matches .. " matches:\n\n"
+                result_text = result_text .. "First " .. #matches .. " examples:\n\n"
                 result_text = result_text .. "NOTE: In Lua patterns, '.+' is greedy (matches maximum).\n"
                 result_text = result_text .. "Use '.-' for non-greedy (matches minimum).\n\n"
                 for i, match_pair in ipairs(matches) do
-                    result_text = result_text .. string.format("--- Match %d ---\n", i)
+                    result_text = result_text .. string.format("--- Example %d ---\n", i)
                     result_text = result_text .. string.format("BEFORE (%d chars): %s\n", 
                         #match_pair.before, match_pair.before:sub(1, 200))
                     if #match_pair.before > 200 then
@@ -841,8 +915,13 @@ function HtmlReplacer:checkPattern(pattern, replacement)
                 text_face = Font:getFace("smallinfont"),
             })
         else
+            -- Cleanup temp directory even on failure
+            logger.err("HtmlReplacer: unzip command failed, result code:", result)
+            os.execute(string.format("rm -rf %q", temp_dir))
+            
             UIManager:show(InfoMessage:new{
-                text = _("Failed to extract EPUB for pattern checking."),
+                text = _("Failed to extract EPUB for pattern checking.\n\nCheck that the file is a valid EPUB.\n\nSee logs for details."),
+                timeout = 5,
             })
         end
     end)
@@ -852,6 +931,7 @@ function HtmlReplacer:clearCache()
     UIManager:show(InfoMessage:new{
         text = _("Clearing cache..."),
         timeout = 1,
+        flush_events_on_show = true,
     })
     
     -- Remove all files in cache directory (but not originals folder)
@@ -918,6 +998,7 @@ function HtmlReplacer:doApplyChanges()
     UIManager:show(InfoMessage:new{
         text = _("Applying changes..."),
         timeout = 2,
+        flush_events_on_show = true,
     })
     
     UIManager:scheduleIn(0.1, function()
@@ -943,22 +1024,25 @@ function HtmlReplacer:doApplyChanges()
             logger.info("HtmlReplacer: Copied CSS tweaks from cache to original")
         end
         
-        -- Step 1: Backup original to cache/originals/ (only if no backup exists)
+        -- Step 1: Backup original to cache/originals/
         local backup_path = self:getBackupPath(self.original_file)
         
-        -- Only create backup if one doesn't already exist (preserve the TRUE original)
-        if lfs.attributes(backup_path, "mode") ~= "file" then
-            local success = self:copyFile(self.original_file, backup_path)
-            if not success then
-                UIManager:show(InfoMessage:new{
-                    text = _("Failed to backup original file."),
-                })
-                return
-            end
-            logger.info("HtmlReplacer: Backed up original to", backup_path)
-        else
-            logger.info("HtmlReplacer: Backup already exists")
+        -- Remove existing backup if present
+        if lfs.attributes(backup_path, "mode") == "file" then
+            os.remove(backup_path)
+            logger.info("HtmlReplacer: Removed old backup")
         end
+        
+        -- Copy original to backup
+        local success = self:copyFile(self.original_file, backup_path)
+        if not success then
+            UIManager:show(InfoMessage:new{
+                text = _("Failed to backup original file."),
+            })
+            return
+        end
+        
+        logger.info("HtmlReplacer: Backed up original to", backup_path)
         
         -- Step 2: Copy modified cache to original location
         success = self:copyFile(self.modified_file, self.original_file)
@@ -994,6 +1078,7 @@ function HtmlReplacer:doApplyChanges()
         UIManager:show(InfoMessage:new{
             text = message,
             timeout = 2,
+            flush_events_on_show = true,
         })
         
         UIManager:scheduleIn(0.5, function()
@@ -1033,6 +1118,7 @@ function HtmlReplacer:doRevertChanges(backup_path)
     UIManager:show(InfoMessage:new{
         text = _("Reverting to original..."),
         timeout = 2,
+        flush_events_on_show = true,
     })
     
     UIManager:scheduleIn(0.1, function()
@@ -1066,6 +1152,7 @@ function HtmlReplacer:doRevertChanges(backup_path)
         UIManager:show(InfoMessage:new{
             text = _("Original restored! Reloading..."),
             timeout = 2,
+            flush_events_on_show = true,
         })
         
         UIManager:scheduleIn(0.5, function()
