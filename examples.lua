@@ -130,12 +130,13 @@ return {
     },
     
     --------------------------------------------------------
-    -- SPECIFIC USE CASES
+    -- SPECIFIC USE CASES (REPLACEMENT RULES)
     --------------------------------------------------------
     
     -- Example: Your specific use case from the question
     -- Remove span around "world"
     { 
+        type = "replacement",
         pattern = "<span>world</span>", 
         replacement = "world", 
         enabled = false 
@@ -143,15 +144,84 @@ return {
     
     -- Or add auto-insert after it
     { 
+        type = "replacement",
         pattern = "(<span>world</span>)", 
         replacement = "%1<span>autoinsert</span>", 
         enabled = false 
     },
     
     --------------------------------------------------------
+    -- FOOTNOTE RULES
+    --------------------------------------------------------
+    
+    -- Add footnote to medical term
+    {
+        type = "footnote",
+        pattern = "tuberculosis",
+        delimiter = "*",
+        footnote_text = "An infectious disease caused by Mycobacterium tuberculosis, primarily affecting the lungs.",
+        repeat_limiter = 0,  -- 0 = add to every occurrence
+        description = "TB definition",
+        enabled = false
+    },
+    
+    -- Add footnote to proper nouns (limit repeats to avoid clutter)
+    {
+        type = "footnote",
+        pattern = "Sierra Leone",
+        delimiter = "†",
+        footnote_text = "A country in West Africa, bordered by Guinea and Liberia.",
+        repeat_limiter = 2000,  -- Only add footnote if 2000+ chars since last one
+        description = "Sierra Leone info",
+        enabled = false
+    },
+    
+    -- Add footnote to specific HTML patterns
+    {
+        type = "footnote",
+        pattern = '<span class="term">pandemic</span>',
+        delimiter = "**",
+        footnote_text = "An epidemic occurring worldwide, or over a very wide area, crossing international boundaries and usually affecting a large number of people.",
+        description = "Pandemic definition",
+        enabled = false
+    },
+    
+    -- Multiple delimiters for different footnotes
+    {
+        type = "footnote",
+        pattern = "KOReader",
+        delimiter = "‡",
+        footnote_text = "An open-source e-reader application supporting multiple document formats.",
+        description = "KOReader info",
+        enabled = false
+    },
+    
+    --------------------------------------------------------
     -- PATTERN SYNTAX REFERENCE
     --------------------------------------------------------
     --
+    -- REPLACEMENT RULES:
+    --   type = "replacement" (or omit for backward compatibility)
+    --   pattern = Lua regex pattern
+    --   replacement = Replacement text with %1, %2, etc. for captures
+    --   description = Optional description
+    --   enabled = true/false
+    --
+    -- FOOTNOTE RULES:
+    --   type = "footnote"
+    --   pattern = Lua regex to match text for footnote
+    --   delimiter = Footnote indicator (*, **, †, ‡, §, etc.)
+    --   footnote_text = The actual footnote content
+    --   repeat_limiter = Min chars between repeats (0=no limit, add to all)
+    --   description = Optional description
+    --   enabled = true/false
+    --
+    -- Repeat Limiter Examples:
+    --   0 = Add footnote to EVERY occurrence
+    --   2000 = Only add footnote if 2000+ chars since last footnote
+    --   5000 = Only add footnote if 5000+ chars since last footnote
+    --
+    -- Lua Pattern Characters:
     -- .         Any character
     -- .-        Match minimum chars (non-greedy)
     -- .+        Match one or more (greedy)

@@ -46,7 +46,80 @@ function HtmlReplacer:init()
     self.is_using_cache = false
     
     self.ui.menu:registerToMainMenu(self)
+    
+    -- Register text selection menu items
+    if self.ui.highlight then
+        logger.info("HtmlReplacer: Registering highlight menu items")
+        self:addToHighlightDialog()
+    end
+    
     logger.info("HtmlReplacer: Plugin initialization complete")
+end
+
+-- Add items to the text selection / highlight dialog
+function HtmlReplacer:addToHighlightDialog()
+    -- Add "Replacement rule" item
+    self.ui.highlight:addToHighlightDialog("12_html_replacement_rule", function(highlight)
+        return {
+            text = _("Replacement rule"),
+            callback = function()
+                local selected_text = highlight.selected_text and highlight.selected_text.text
+                if selected_text and selected_text ~= "" then
+                    highlight:onClose()
+                    self:addNewReplacementRuleDialog(selected_text)
+                else
+                    UIManager:show(InfoMessage:new{
+                        text = _("No text selected."),
+                    })
+                end
+            end,
+        }
+    end)
+    
+    -- Add "Footnote rule" item
+    self.ui.highlight:addToHighlightDialog("12_html_footnote_rule", function(highlight)
+        return {
+            text = _("Footnote rule"),
+            callback = function()
+                local selected_text = highlight.selected_text and highlight.selected_text.text
+                if selected_text and selected_text ~= "" then
+                    highlight:onClose()
+                    self:addNewFootnoteRuleDialog(selected_text)
+                else
+                    UIManager:show(InfoMessage:new{
+                        text = _("No text selected."),
+                    })
+                end
+            end,
+        }
+    end)
+end
+
+-- Add items to dictionary popup (for single word selections)
+function HtmlReplacer:onDictButtonsReady(dict_popup, buttons)
+    -- Add our buttons as a new row
+    table.insert(buttons, {
+        {
+            text = _("Replacement rule"),
+            callback = function()
+                local selected_text = dict_popup.lookupword
+                if selected_text and selected_text ~= "" then
+                    dict_popup:onClose()
+                    self:addNewReplacementRuleDialog(selected_text)
+                end
+            end,
+        },
+        {
+            text = _("Footnote rule"),
+            callback = function()
+                local selected_text = dict_popup.lookupword
+                if selected_text and selected_text ~= "" then
+                    dict_popup:onClose()
+                    self:addNewFootnoteRuleDialog(selected_text)
+                end
+            end,
+        },
+    })
 end
 
 function HtmlReplacer:onReadSettings(config)
@@ -145,7 +218,14 @@ function HtmlReplacer:getRulesHash()
     local parts = {}
     for _, rule in ipairs(self.replacements) do
         if rule.enabled then
-            table.insert(parts, rule.pattern .. "|" .. rule.replacement)
+            local rule_type = rule.type or "replacement"
+            if rule_type == "footnote" then
+                table.insert(parts, string.format("%s|%s|%s|%s", 
+                    rule_type, rule.pattern, rule.delimiter or "*", rule.footnote_text or ""))
+            else
+                table.insert(parts, string.format("%s|%s|%s", 
+                    rule_type, rule.pattern, rule.replacement or ""))
+            end
         end
     end
     return md5(table.concat(parts, "\n"))
@@ -330,14 +410,20 @@ function HtmlReplacer:addToMainMenu(menu_items)
     -- Insert our menu as first item in style_tweaks submenu
     table.insert(style_tweaks_table, 1, {
         text_func = function()
-            local enabled_count = 0
+            local replacement_count = 0
+            local footnote_count = 0
             for _, rule in ipairs(self.replacements) do
                 if rule.enabled then
-                    enabled_count = enabled_count + 1
+                    local rule_type = rule.type or "replacement"
+                    if rule_type == "footnote" then
+                        footnote_count = footnote_count + 1
+                    else
+                        replacement_count = replacement_count + 1
+                    end
                 end
             end
-            if enabled_count > 0 then
-                return _("HTML content tweaks") .. " (" .. enabled_count .. ")"
+            if replacement_count > 0 or footnote_count > 0 then
+                return string.format(_("HTML content tweaks") .. " (%d+%d)", replacement_count, footnote_count)
             else
                 return _("HTML content tweaks")
             end
@@ -350,17 +436,24 @@ end
 function HtmlReplacer:getMenuTable()
     return {
             {
-                text = _("Toggle Replacement Rules"),
+                text = _("Toggle Rules"),
                 keep_menu_open = true,
                 callback = function()
-                    self:showReplacementsDialog()
+                    self:showAllRulesDialog()
                 end,
             },
             {
-                text = _("Add New Rule"),
+                text = _("Add Replacement Rule"),
                 keep_menu_open = true,
                 callback = function()
-                    self:addNewRuleDialog()
+                    self:addNewReplacementRuleDialog()
+                end,
+            },
+            {
+                text = _("Add Footnote Rule"),
+                keep_menu_open = true,
+                callback = function()
+                    self:addNewFootnoteRuleDialog()
                 end,
             },
             {
@@ -414,7 +507,11 @@ function HtmlReplacer:getMenuTable()
                     UIManager:show(InfoMessage:new{
                         text = _([[HTML Replacer Plugin
 
-Apply regex-based replacements to EPUB HTML content.
+Apply regex-based replacements and add footnotes to EPUB HTML content.
+
+RULE TYPES:
+• Replacement Rules - Replace matched text
+• Footnote Rules - Add footnotes with proper EPUB structure
 
 WORKFLOW:
 1. Add rules (book-specific)
@@ -434,8 +531,8 @@ Lua Pattern Syntax (IMPORTANT):
   .+  = greedy (matches MAXIMUM)
 
 Examples:
-  <span>(.-)</span> → %1
-  <div class="(.-)">.+ → removes divs
+  Replacement: <span>(.-)</span> → %1
+  Footnote: Pattern + Delimiter + Text
   
 Use "Check" button to verify matches!]]),
                     })
@@ -444,14 +541,18 @@ Use "Check" button to verify matches!]]),
         }
 end
 
-function HtmlReplacer:showReplacementsDialog()
+function HtmlReplacer:showAllRulesDialog()
     local buttons = {}
     
     for i, rule in ipairs(self.replacements) do
-        local display_text = rule.description or rule.pattern:sub(1, 40)
+        local rule_type = rule.type or "replacement"
+        local type_icon = rule_type == "footnote" and "📝" or "🔄"
+        local display_text = rule.description or rule.pattern:sub(1, 35)
+        
         table.insert(buttons, {{
-            text = string.format("%s %s", 
+            text = string.format("%s %s %s", 
                 rule.enabled and "☑" or "☐",
+                type_icon,
                 display_text),
             align = "left",
             callback = function()
@@ -465,18 +566,9 @@ function HtmlReplacer:showReplacementsDialog()
         }})
     end
     
-    -- Add button to add new rule
-    table.insert(buttons, {{
-        text = "+ " .. _("Add New Rule"),
-        align = "left",
-        callback = function()
-            self:addNewRuleDialog()
-        end,
-    }})
-    
     local ButtonDialog = require("ui/widget/buttondialog")
     UIManager:show(ButtonDialog:new{
-        title = _("Toggle Replacement Rules (Book-Specific)"),
+        title = _("Toggle All Rules (Book-Specific)"),
         buttons = buttons,
     })
 end
@@ -492,16 +584,24 @@ function HtmlReplacer:editReplacementRules()
     
     if #self.replacements == 0 then
         table.insert(content_lines, "-- No rules defined yet")
-        table.insert(content_lines, "-- Use 'Add New Rule' to create rules")
+        table.insert(content_lines, "-- Use 'Add Replacement Rule' or 'Add Footnote Rule'")
     else
         for i, rule in ipairs(self.replacements) do
+            local rule_type = rule.type or "replacement"
             local status = rule.enabled and "ENABLED" or "DISABLED"
-            table.insert(content_lines, string.format("-- Rule %d: %s", i, status))
+            
+            table.insert(content_lines, string.format("-- Rule %d: %s (%s)", i, rule_type:upper(), status))
             if rule.description then
                 table.insert(content_lines, string.format("-- Description: %s", rule.description))
             end
             table.insert(content_lines, string.format('pattern = %q', rule.pattern))
-            table.insert(content_lines, string.format('replacement = %q', rule.replacement))
+            
+            if rule_type == "footnote" then
+                table.insert(content_lines, string.format('delimiter = %q', rule.delimiter or "*"))
+                table.insert(content_lines, string.format('footnote_text = %q', rule.footnote_text or ""))
+            else
+                table.insert(content_lines, string.format('replacement = %q', rule.replacement))
+            end
             table.insert(content_lines, "")
         end
     end
@@ -519,15 +619,16 @@ function HtmlReplacer:editReplacementRules()
     })
 end
 
-function HtmlReplacer:addNewRuleDialog()
+function HtmlReplacer:addNewReplacementRuleDialog(default_pattern)
     local MultiInputDialog = require("ui/widget/multiinputdialog")
+    default_pattern = default_pattern or ""
     
     local input_dialog
     input_dialog = MultiInputDialog:new{
         title = _("Add New Replacement Rule"),
         fields = {
             {
-                text = "",
+                text = default_pattern,
                 hint = "Pattern (use .- not .+ ): <span>(.-)</span>",
                 input_type = "string",
             },
@@ -570,6 +671,7 @@ function HtmlReplacer:addNewRuleDialog()
                         local fields = input_dialog:getFields()
                         if fields[1] ~= "" and fields[2] ~= "" then
                             table.insert(self.replacements, {
+                                type = "replacement",
                                 pattern = fields[1],
                                 replacement = fields[2],
                                 description = fields[3] ~= "" and fields[3] or nil,
@@ -578,7 +680,7 @@ function HtmlReplacer:addNewRuleDialog()
                             self:onSaveSettings()
                             UIManager:close(input_dialog)
                             UIManager:show(InfoMessage:new{
-                                text = _("Rule added and enabled.\n\nUse 'Reload with Replacements' to preview."),
+                                text = _("Replacement rule added and enabled.\n\nUse 'Reload with Replacements' to preview."),
                                 timeout = 3,
                             })
                         else
@@ -596,10 +698,89 @@ function HtmlReplacer:addNewRuleDialog()
     input_dialog:onShowKeyboard()
 end
 
+function HtmlReplacer:addNewFootnoteRuleDialog(default_pattern)
+    local MultiInputDialog = require("ui/widget/multiinputdialog")
+    default_pattern = default_pattern or ""
+    
+    local input_dialog
+    input_dialog = MultiInputDialog:new{
+        title = _("Add New Footnote Rule"),
+        fields = {
+            {
+                text = default_pattern,
+                hint = "Pattern to match: <span>tuberculosis</span>",
+                input_type = "string",
+            },
+            {
+                text = "*",
+                hint = "Delimiter: *, **, †, etc.",
+                input_type = "string",
+            },
+            {
+                text = "",
+                hint = "Footnote text (will appear at bottom)",
+                input_type = "text",
+            },
+            {
+                text = "",
+                hint = "Repeat limiter (chars, 0=all): 2000",
+                input_type = "number",
+            },
+            {
+                text = "",
+                hint = "Description (optional)",
+                input_type = "string",
+            },
+        },
+        buttons = {
+            {
+                {
+                    text = _("Cancel"),
+                    callback = function()
+                        UIManager:close(input_dialog)
+                    end,
+                },
+                {
+                    text = _("Add"),
+                    is_enter_default = true,
+                    callback = function()
+                        local fields = input_dialog:getFields()
+                        if fields[1] ~= "" and fields[2] ~= "" and fields[3] ~= "" then
+                            local repeat_limiter = tonumber(fields[4]) or 0
+                            table.insert(self.replacements, {
+                                type = "footnote",
+                                pattern = fields[1],
+                                delimiter = fields[2],
+                                footnote_text = fields[3],
+                                repeat_limiter = repeat_limiter,
+                                description = fields[5] ~= "" and fields[5] or nil,
+                                enabled = true, -- Enabled by default
+                            })
+                            self:onSaveSettings()
+                            UIManager:close(input_dialog)
+                            UIManager:show(InfoMessage:new{
+                                text = _("Footnote rule added and enabled.\n\nUse 'Reload with Replacements' to preview."),
+                                timeout = 3,
+                            })
+                        else
+                            UIManager:show(InfoMessage:new{
+                                text = _("Pattern, delimiter, and footnote text are required."),
+                            })
+                        end
+                    end,
+                },
+            },
+        },
+    }
+    
+    UIManager:show(input_dialog)
+    input_dialog:onShowKeyboard()
+end
+
 function HtmlReplacer:manageRulesDialog()
     if #self.replacements == 0 then
         UIManager:show(InfoMessage:new{
-            text = _("No rules to manage.\n\nUse 'Add New Rule' to create rules."),
+            text = _("No rules to manage.\n\nUse 'Add Replacement Rule' or 'Add Footnote Rule' to create rules."),
         })
         return
     end
@@ -607,10 +788,14 @@ function HtmlReplacer:manageRulesDialog()
     local buttons = {}
     
     for i, rule in ipairs(self.replacements) do
-        local display_text = rule.description or rule.pattern:sub(1, 40)
+        local rule_type = rule.type or "replacement"
+        local type_icon = rule_type == "footnote" and "📝" or "🔄"
+        local display_text = rule.description or rule.pattern:sub(1, 35)
+        
         table.insert(buttons, {{
-            text = string.format("%s %s", 
+            text = string.format("%s %s %s", 
                 rule.enabled and "☑" or "☐",
+                type_icon,
                 display_text),
             align = "left",
             callback = function()
@@ -667,6 +852,16 @@ function HtmlReplacer:showRuleActions(index, rule)
 end
 
 function HtmlReplacer:editRule(index, rule)
+    local rule_type = rule.type or "replacement"
+    
+    if rule_type == "footnote" then
+        self:editFootnoteRule(index, rule)
+    else
+        self:editReplacementRule(index, rule)
+    end
+end
+
+function HtmlReplacer:editReplacementRule(index, rule)
     local MultiInputDialog = require("ui/widget/multiinputdialog")
     
     local input_dialog
@@ -742,6 +937,81 @@ function HtmlReplacer:editRule(index, rule)
     input_dialog:onShowKeyboard()
 end
 
+function HtmlReplacer:editFootnoteRule(index, rule)
+    local MultiInputDialog = require("ui/widget/multiinputdialog")
+    
+    local input_dialog
+    input_dialog = MultiInputDialog:new{
+        title = _("Edit Footnote Rule"),
+        fields = {
+            {
+                text = rule.pattern or "",
+                hint = "Pattern to match: <span>tuberculosis</span>",
+                input_type = "string",
+            },
+            {
+                text = rule.delimiter or "*",
+                hint = "Delimiter: *, **, †, etc.",
+                input_type = "string",
+            },
+            {
+                text = rule.footnote_text or "",
+                hint = "Footnote text (will appear at bottom)",
+                input_type = "text",
+            },
+            {
+                text = tostring(rule.repeat_limiter or 0),
+                hint = "Repeat limiter (chars, 0=all): 2000",
+                input_type = "number",
+            },
+            {
+                text = rule.description or "",
+                hint = "Description (optional)",
+                input_type = "string",
+            },
+        },
+        buttons = {
+            {
+                {
+                    text = _("Cancel"),
+                    callback = function()
+                        UIManager:close(input_dialog)
+                    end,
+                },
+                {
+                    text = _("Save"),
+                    is_enter_default = true,
+                    callback = function()
+                        local fields = input_dialog:getFields()
+                        if fields[1] ~= "" and fields[2] ~= "" and fields[3] ~= "" then
+                            -- Update the rule
+                            self.replacements[index].pattern = fields[1]
+                            self.replacements[index].delimiter = fields[2]
+                            self.replacements[index].footnote_text = fields[3]
+                            self.replacements[index].repeat_limiter = tonumber(fields[4]) or 0
+                            self.replacements[index].description = fields[5] ~= "" and fields[5] or nil
+                            
+                            self:onSaveSettings()
+                            UIManager:close(input_dialog)
+                            UIManager:show(InfoMessage:new{
+                                text = _("Footnote rule updated."),
+                                timeout = 2,
+                            })
+                        else
+                            UIManager:show(InfoMessage:new{
+                                text = _("Pattern, delimiter, and footnote text are required."),
+                            })
+                        end
+                    end,
+                },
+            },
+        },
+    }
+    
+    UIManager:show(input_dialog)
+    input_dialog:onShowKeyboard()
+end
+
 function HtmlReplacer:confirmDeleteRule(index, rule)
     local ConfirmBox = require("ui/widget/confirmbox")
     local display = rule.description or rule.pattern:sub(1, 50)
@@ -761,7 +1031,31 @@ end
 
 function HtmlReplacer:showRuleDetails(rule)
     local TextViewer = require("ui/widget/textviewer")
-    local details = string.format([[Status: %s
+    local rule_type = rule.type or "replacement"
+    
+    local details
+    if rule_type == "footnote" then
+        details = string.format([[Type: Footnote Rule
+Status: %s
+
+Pattern:
+%s
+
+Delimiter:
+%s
+
+Footnote Text:
+%s
+
+%s]],
+            rule.enabled and "ENABLED" or "DISABLED",
+            rule.pattern,
+            rule.delimiter or "*",
+            rule.footnote_text or "",
+            rule.description and ("Description:\n" .. rule.description) or "")
+    else
+        details = string.format([[Type: Replacement Rule
+Status: %s
 
 Pattern:
 %s
@@ -770,10 +1064,11 @@ Replacement:
 %s
 
 %s]],
-        rule.enabled and "ENABLED" or "DISABLED",
-        rule.pattern,
-        rule.replacement,
-        rule.description and ("Description:\n" .. rule.description) or "")
+            rule.enabled and "ENABLED" or "DISABLED",
+            rule.pattern,
+            rule.replacement,
+            rule.description and ("Description:\n" .. rule.description) or "")
+    end
     
     UIManager:show(TextViewer:new{
         title = _("Rule Details"),

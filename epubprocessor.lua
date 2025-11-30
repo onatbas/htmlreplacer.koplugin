@@ -119,8 +119,25 @@ function EpubProcessor:extractEpub(epub_path)
     end
 end
 
-function EpubProcessor:applyReplacements(temp_dir, replacements)
+function EpubProcessor:applyReplacements(temp_dir, rules)
     local count = 0
+    
+    -- Separate rules by type
+    local replacement_rules = {}
+    local footnote_rules = {}
+    
+    for _, rule in ipairs(rules) do
+        if rule.enabled then
+            if rule.type == "footnote" then
+                table.insert(footnote_rules, rule)
+            else
+                -- Default to replacement type for backward compatibility
+                table.insert(replacement_rules, rule)
+            end
+        end
+    end
+    
+    logger.info("EpubProcessor: Processing", #replacement_rules, "replacement rules and", #footnote_rules, "footnote rules")
     
     -- Find all HTML/XHTML files
     local function processDirectory(dir)
@@ -133,7 +150,23 @@ function EpubProcessor:applyReplacements(temp_dir, replacements)
                     processDirectory(path)
                 elseif attr.mode == "file" then
                     if path:match("%.x?html$") or path:match("%.xhtml$") then
-                        if self:processHtmlFile(path, replacements) then
+                        local modified = false
+                        
+                        -- First apply replacement rules
+                        if #replacement_rules > 0 then
+                            if self:processReplacementRules(path, replacement_rules) then
+                                modified = true
+                            end
+                        end
+                        
+                        -- Then apply footnote rules
+                        if #footnote_rules > 0 then
+                            if self:processFootnoteRules(path, footnote_rules) then
+                                modified = true
+                            end
+                        end
+                        
+                        if modified then
                             count = count + 1
                         end
                     end
@@ -146,7 +179,7 @@ function EpubProcessor:applyReplacements(temp_dir, replacements)
     return count
 end
 
-function EpubProcessor:processHtmlFile(filepath, replacements)
+function EpubProcessor:processReplacementRules(filepath, replacement_rules)
     local f = io.open(filepath, "r")
     if not f then
         logger.warn("EpubProcessor: Cannot open", filepath)
@@ -159,21 +192,19 @@ function EpubProcessor:processHtmlFile(filepath, replacements)
     local modified = false
     
     -- Apply each enabled replacement
-    for _, rule in ipairs(replacements) do
-        if rule.enabled then
-            -- Wrap in pcall to catch pattern errors
-            local success, new_content = pcall(function()
-                return content:gsub(rule.pattern, rule.replacement)
-            end)
-            
-            if not success then
-                logger.err("EpubProcessor: Pattern/replacement error for rule:", rule.pattern, "Error:", new_content)
-                -- Continue with other rules instead of failing completely
-            elseif new_content ~= content then
-                content = new_content
-                modified = true
-                logger.dbg("EpubProcessor: Applied rule to", filepath)
-            end
+    for _, rule in ipairs(replacement_rules) do
+        -- Wrap in pcall to catch pattern errors
+        local success, new_content = pcall(function()
+            return content:gsub(rule.pattern, rule.replacement)
+        end)
+        
+        if not success then
+            logger.err("EpubProcessor: Pattern/replacement error for rule:", rule.pattern, "Error:", new_content)
+            -- Continue with other rules instead of failing completely
+        elseif new_content ~= content then
+            content = new_content
+            modified = true
+            logger.dbg("EpubProcessor: Applied replacement rule to", filepath)
         end
     end
     
@@ -190,6 +221,14 @@ function EpubProcessor:processHtmlFile(filepath, replacements)
     end
     
     return false
+end
+
+function EpubProcessor:processFootnoteRules(filepath, footnote_rules)
+    -- Load FootnoteProcessor
+    local FootnoteProcessor = require("footnoteprocessor")
+    local processor = FootnoteProcessor:new()
+    
+    return processor:processHtmlFile(filepath, footnote_rules)
 end
 
 function EpubProcessor:repackageEpub(temp_dir, output_path)
