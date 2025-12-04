@@ -10,6 +10,7 @@ local UIManager = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local logger = require("logger")
 local lfs = require("libs/libkoreader-lfs")
+local util = require("util")
 local _ = require("gettext")
 
 local HtmlReplacer = WidgetContainer:extend{
@@ -102,7 +103,15 @@ function HtmlReplacer:onDictButtonsReady(dict_popup, buttons)
         {
             text = _("Replacement rule"),
             callback = function()
-                local selected_text = dict_popup.lookupword
+                -- Try to get original selected text first, fallback to dictionary lookup word
+                local selected_text = nil
+                if dict_popup.highlight and dict_popup.highlight.selected_text then
+                    selected_text = util.cleanupSelectedText(dict_popup.highlight.selected_text.text)
+                end
+                if not selected_text or selected_text == "" then
+                    selected_text = dict_popup.lookupword
+                end
+                
                 if selected_text and selected_text ~= "" then
                     dict_popup:onClose()
                     self:addNewReplacementRuleDialog(selected_text)
@@ -112,7 +121,15 @@ function HtmlReplacer:onDictButtonsReady(dict_popup, buttons)
         {
             text = _("Footnote rule"),
             callback = function()
-                local selected_text = dict_popup.lookupword
+                -- Try to get original selected text first, fallback to dictionary lookup word
+                local selected_text = nil
+                if dict_popup.highlight and dict_popup.highlight.selected_text then
+                    selected_text = util.cleanupSelectedText(dict_popup.highlight.selected_text.text)
+                end
+                if not selected_text or selected_text == "" then
+                    selected_text = dict_popup.lookupword
+                end
+                
                 if selected_text and selected_text ~= "" then
                     dict_popup:onClose()
                     self:addNewFootnoteRuleDialog(selected_text)
@@ -1385,32 +1402,27 @@ function HtmlReplacer:doApplyChanges()
             logger.info("HtmlReplacer: No CSS tweaks in cache to copy")
         end
         
-        -- Step 1: Backup original to cache/originals/
-        logger.info("HtmlReplacer: Step 1 - Creating backup...")
+        -- Step 1: Backup original to cache/originals/ (only if backup doesn't exist)
+        logger.info("HtmlReplacer: Step 1 - Checking backup...")
         local backup_path = self:getBackupPath(self.original_file)
         logger.info("HtmlReplacer: Backup path:", backup_path)
         
         -- Check if backup already exists
         if lfs.attributes(backup_path, "mode") == "file" then
-            logger.info("HtmlReplacer: Old backup exists, removing it")
-            local remove_result = os.remove(backup_path)
-            logger.dbg("HtmlReplacer: Old backup removal result:", remove_result)
+            logger.info("HtmlReplacer: Backup already exists, preserving original backup")
         else
-            logger.info("HtmlReplacer: No previous backup found")
+            logger.info("HtmlReplacer: No backup found, creating first backup")
+            -- Copy original to backup (only once!)
+            local success = self:copyFile(self.original_file, backup_path)
+            if not success then
+                logger.err("HtmlReplacer: Failed to backup original file!")
+                UIManager:show(InfoMessage:new{
+                    text = _("Failed to backup original file."),
+                })
+                return
+            end
+            logger.info("HtmlReplacer: Successfully created original backup at", backup_path)
         end
-        
-        -- Copy original to backup
-        logger.info("HtmlReplacer: Copying original to backup...")
-        local success = self:copyFile(self.original_file, backup_path)
-        if not success then
-            logger.err("HtmlReplacer: Failed to backup original file!")
-            UIManager:show(InfoMessage:new{
-                text = _("Failed to backup original file."),
-            })
-            return
-        end
-        
-        logger.info("HtmlReplacer: Successfully backed up original to", backup_path)
         
         -- Step 2: Copy modified cache to original location
         logger.info("HtmlReplacer: Step 2 - Replacing original with modified version...")

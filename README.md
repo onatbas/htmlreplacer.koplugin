@@ -180,9 +180,11 @@ This lets you experiment with both HTML replacements and CSS tweaks together, th
 ## Safety & Backups
 
 - **Preview is non-destructive**: Cache files don't modify your original EPUB
-- **Apply creates backup**: Original is backed up to `htmlreplacer_cache/originals/`
+- **Apply creates backup ONCE**: Original is backed up to `htmlreplacer_cache/originals/` on first apply
+- **Backup is never overwritten**: Once backed up, the original is preserved forever - you can always revert to the true original
+- **Multiple edits safe**: You can apply changes multiple times; only the working copy gets updated
 - **CSS tweaks auto-copied**: Any CSS tweaks in cache are appended to original on apply
-- **Revert available**: Restore original anytime using "Revert to Original"
+- **Revert available**: Restore the true original anytime using "Revert to Original"
 - **Rules are preserved**: Even after reverting, your rules remain in `.sdr` folder
 
 ## Testing Footnote Rules
